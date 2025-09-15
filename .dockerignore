@@ -1,0 +1,14 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.venv/
+.env
+.env.*
+.idea/
+.vscode/
+**/.DS_Store
+knowledge_base/**        # if large/static; keep out of image
+*.csv
