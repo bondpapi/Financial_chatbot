@@ -37,3 +37,16 @@ def enable_langsmith_if_configured(logger=None) -> None:
             logger.info("LangSmith tracing enabled.")
     elif logger:
         logger.info("LangSmith tracing not enabled (set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY).")
+
+# --- Add this to config.py ---
+def bootstrap_streamlit_secrets_to_env():
+    """Copy Streamlit secrets to os.environ so the rest of the app can read them normally."""
+    try:
+        import streamlit as st  # imported lazily; fine when not running under Streamlit
+        for k, v in st.secrets.items():
+            os.environ.setdefault(k, str(v))
+    except Exception:
+        pass
+
+bootstrap_streamlit_secrets_to_env()
+
