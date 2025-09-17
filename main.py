@@ -83,7 +83,7 @@ st.subheader("⚡ Quick tools")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    sym = st.text_input("Stock symbol for price (e.g., AAPL)", key="price_symbol", value=st.session_state.get("price_symbol", "AAPL"))
+    sym = st.text_input("Stock Symbol for price (e.g., AAPL)", key="price_symbol", value=st.session_state.get("price_symbol", "AAPL"))
     if st.button("Get Price"):
         try:
             st.markdown(get_stock_price(normalize_ticker(sym)))
@@ -91,7 +91,7 @@ with col1:
             st.error(f"Invalid symbol: {e}")
 
 with col2:
-    sym2 = st.text_input("Stock symbol for 1-month trend", key="trend_symbol", value=st.session_state.get("trend_symbol", "AAPL"))
+    sym2 = st.text_input("Stock Symbol for 1-month trend", key="trend_symbol", value=st.session_state.get("trend_symbol", "AAPL"))
     if st.button("Get 1-mo Trend"):
         try:
             trend = get_trend_summary(normalize_ticker(sym2))
@@ -100,7 +100,7 @@ with col2:
             st.error(f"Invalid symbol: {e}")
 
 with col3:
-    sym3 = st.text_input("Stock symbol for sector insight", key="sector_symbol", value=st.session_state.get("sector_symbol", "AAPL"))
+    sym3 = st.text_input("Stock Symbol for sector insight", key="sector_symbol", value=st.session_state.get("sector_symbol", "AAPL"))
     if st.button("Sector Insight"):
         try:
             insight = get_sector_insight(normalize_ticker(sym3))
