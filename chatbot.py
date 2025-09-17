@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Optional, List
 from langchain_openai import ChatOpenAI
 from langchain.agents import initialize_agent, Tool
 from langchain.agents.agent_types import AgentType
 from langchain.chains import RetrievalQA
+from langchain.schema import AgentAction
 from web_rag import web_rag
 from rag_utils import build_vectorstore_from_texts, build_live_knowledge_base
 from finance_tools import get_stock_price, get_trend_summary, get_sector_insight
@@ -14,19 +15,44 @@ from config import enable_langsmith_if_configured
 logger = get_logger(__name__)
 enable_langsmith_if_configured(logger)
 
-# ---------- Local KB (in-memory, built at import) ----------
 try:
     _docs = build_live_knowledge_base()
     _vectorstore = build_vectorstore_from_texts(_docs)
     _retriever = _vectorstore.as_retriever()
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0.0, model="gpt-4o-mini"),
+        llm=ChatOpenAI(temperature=0.0, model_name="gpt-4"),
         retriever=_retriever,
+    )
+    qa_chain_with_sources = RetrievalQA.from_chain_type(
+        llm=ChatOpenAI(temperature=0.0, model_name="gpt-4"),
+        retriever=_retriever,
+        return_source_documents=True,
     )
     logger.info("Local RAG initialized.")
 except Exception as e:
     logger.exception("Failed to initialize local RAG: %s", e)
     qa_chain = None
+    qa_chain_with_sources = None
+
+def _format_citations(docs: List) -> str:
+    if not docs:
+        return ""
+    seen, lines = set(), []
+    for i, d in enumerate(docs, 1):
+        src = d.metadata.get("source") or d.metadata.get("url") or d.metadata.get("title") or "Source"
+        if src in seen:
+            continue
+        seen.add(src)
+        lines.append(f"[{i}] {src}")
+    return "\n\n**Sources:**\n" + "\n".join(lines)
+
+def rag_with_citations(query: str) -> str:
+    if not qa_chain_with_sources:
+        return "RAG not available right now."
+    res = qa_chain_with_sources.invoke(query)
+    answer = res.get("result", "")
+    cites = _format_citations(res.get("source_documents", []))
+    return (answer.strip() + cites) if cites else answer
 
 BASE_POLICY = """
 You are Financial Advisor Bot.
@@ -46,12 +72,15 @@ tools = [
     Tool(name="GetSectorInsight",func=get_sector_insight, description="Provide sector info & recent drivers/risks for a symbol."),
 ]
 if qa_chain:
-    tools.append(Tool(name="RAG", func=qa_chain.run,
-                      description="Answer from small in-memory finance KB (faster/cheaper than WebRAG)."))
-tools.append(Tool(name="WebRAG", func=web_rag,
-                  description="Search the live web and answer with citations (allowlisted domains)."))
+    tools.append(
+        Tool(
+            name="RAG",
+            func=rag_with_citations,
+            description="Answer from in-memory finance KB (returns sources).",
+        )
+    )
+tools.append(Tool(name="WebRAG", func=web_rag, description="Search the live web and answer with citations."))
 
-# ---------- Model routing ----------
 COMPLEX_KEYWORDS = (
     "portfolio", "optimiz", "allocation", "rebalance", "covariance",
     "correlation", "monte carlo", "backtest", "factor", "regression",
@@ -61,8 +90,8 @@ COMPLEX_KEYWORDS = (
 def _choose_model(query: str) -> str:
     q = (query or "").lower()
     if len(q) > 180 or any(k in q for k in COMPLEX_KEYWORDS):
-        return "gpt-5"        # stronger reasoning
-    return "gpt-5-mini"       # cheaper/faster default
+        return "gpt-4"
+    return "gpt-4-mini"
 
 def _build_system_message(user_query: str, extra_system: Optional[str] = None) -> str:
     """
@@ -80,30 +109,39 @@ def _make_agent(
     use_openai_functions: bool = True,
     model: Optional[str] = None,
     max_iterations: int = 3,
+    return_steps: bool = False,
 ):
     system_message = _build_system_message(user_query, extra_system)
     chosen = model or _choose_model(user_query)
-    llm = ChatOpenAI(model=chosen, temperature=0.0)  # deterministic
+    llm = ChatOpenAI(model_name=chosen, temperature=0.0)
     agent_type = AgentType.OPENAI_FUNCTIONS if use_openai_functions else AgentType.ZERO_SHOT_REACT_DESCRIPTION
-    return initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent=agent_type,
-        agent_kwargs={"system_message": system_message},
-        max_iterations=max_iterations,
-        handle_parsing_errors=True,
-        verbose=False,
-    )
+
+    kwargs = {
+        "tools": tools,
+        "llm": llm,
+        "agent": agent_type,
+        "agent_kwargs": {"system_message": system_message},
+        "max_iterations": max_iterations,
+        "handle_parsing_errors": True,
+        "verbose": False,
+    }
+    # best-effort compatibility across LangChain versions
+    try:
+        kwargs["return_intermediate_steps"] = True if return_steps else False
+    except Exception:
+        pass
+
+    return initialize_agent(**kwargs)
 
 def run_agent(
     query: str,
     *,
     extra_system: Optional[str] = None,   # used only in dev
     use_openai_functions: bool = True,    # default to function-calling
-    model: Optional[str] = None,          # None = auto-route
+    model: Optional[str] = None,
     max_iterations: int = 3,
+    return_steps: bool = False,
 ) -> str:
-    # 1) Validate + guard
     try:
         q = validate_query(query)
     except Exception as e:
@@ -115,7 +153,6 @@ def run_agent(
         return msg
     q = msg
 
-    # 2) Run agent
     try:
         agent = _make_agent(
             user_query=q,
@@ -123,15 +160,22 @@ def run_agent(
             use_openai_functions=use_openai_functions,
             model=model,
             max_iterations=max_iterations,
+            return_steps=return_steps,
         )
         logger.info("Agent run | model=%s | functions=%s | iters=%d",
                     (model or _choose_model(q)), use_openai_functions, max_iterations)
-        resp = agent.run(q)
+        if return_steps:
+            result = agent.invoke({"input": q})
+            output = result.get("output", "")
+            steps = result.get("intermediate_steps", [])
+            if needs_disclaimer(q):
+                output = f"{output}\n\n{DISCLAIMER}"
+            return {"text": output, "steps": steps}
+        else:
+            output = agent.run(q)
+            if needs_disclaimer(q):
+                output = f"{output}\n\n{DISCLAIMER}"
+            return output
     except Exception as e:
         logger.exception("Agent run failed: %s", redact_sensitive(str(e)))
         return "❌ Sorry, something went wrong while processing your request. Please try again."
-
-    # 3) Append disclaimer for advice-like queries
-    if needs_disclaimer(q):
-        resp = f"{resp}\n\n{DISCLAIMER}"
-    return resp
