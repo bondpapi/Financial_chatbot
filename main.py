@@ -42,17 +42,24 @@ def _quick_pick(sym: str):
     st.session_state["price_symbol"]  = sym
     st.session_state["trend_symbol"]  = sym
     st.session_state["sector_symbol"] = sym
+    st.session_state["main_query"] = f"What's the latest on {sym} earnings today?"
+    st.toast(f"Selected {sym}")
+    st.rerun()
 
-st.caption("Quick picks:")
-for row_start in range(0, len(POPULAR_SYMBOLS), 6):
-    row = POPULAR_SYMBOLS[row_start:row_start + 6]
+st.caption("Top Picks:")
+for i in range(0, len(POPULAR_SYMBOLS), 6):
+    row = POPULAR_SYMBOLS[i:i+6]
     cols = st.columns(len(row))
-    for i, sym in enumerate(row):
-        if cols[i].button(sym, key=f"pick_{sym}"):
+    for j, sym in enumerate(row):
+        if cols[j].button(sym, key=f"pick_{sym}"):
             _quick_pick(sym)
 
 # ---------- Main chat input ----------
-query = st.text_input("Ask about a stock, sector, or trend:")
+query = st.text_input(
+    "Ask about a stock, sector, or trend:",
+    key="main_query",
+    value=st.session_state.get("main_query", ""),
+)
 
 
 extra_system = None
