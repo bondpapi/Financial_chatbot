@@ -33,7 +33,7 @@ DEV_MODE = (
 
 # ---------- Conversation state ----------
 if "chat" not in st.session_state:
-    st.session_state.chat = []   # list[{"role": "user"/"assistant", "content": str}]
+    st.session_state.chat = []   
 
 # ---------- Popular symbol quick picks ----------
 POPULAR_SYMBOLS = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "BRK.B", "AVGO", "NFLX"]

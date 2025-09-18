@@ -20,11 +20,11 @@ try:
     _vectorstore = build_vectorstore_from_texts(_docs)
     _retriever = _vectorstore.as_retriever()
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0.0, model_name="gpt-4"),
+        llm=ChatOpenAI(temperature=0.0, model_name="gpt-3.5-turbo"),
         retriever=_retriever,
     )
     qa_chain_with_sources = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0.0, model_name="gpt-4"),
+        llm=ChatOpenAI(temperature=0.0, model_name="gpt-3.5-turbo"),
         retriever=_retriever,
         return_source_documents=True,
     )
