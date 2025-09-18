@@ -91,7 +91,7 @@ def _choose_model(query: str) -> str:
     q = (query or "").lower()
     if len(q) > 180 or any(k in q for k in COMPLEX_KEYWORDS):
         return "gpt-4"
-    return "gpt-4-mini"
+    return "gpt-4o-mini"
 
 def _build_system_message(user_query: str, extra_system: Optional[str] = None) -> str:
     """
