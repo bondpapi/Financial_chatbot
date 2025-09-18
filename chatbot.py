@@ -11,6 +11,18 @@ from logging_setup import get_logger
 from validators import validate_query
 from guardrails import apply_guardrails, redact_sensitive, needs_disclaimer, DISCLAIMER
 from config import enable_langsmith_if_configured
+import re
+from typing import Optional, List, Tuple
+
+TIME_WORDS = ("latest", "today", "this week", "breaking", "recent", "current", "now")
+EARNINGS_WORDS = ("earnings", "results", "eps", "guidance", "report", "call")
+PRICE_WORDS = ("price", "quote", "last close", "trading at", "how much is")
+TREND_WORDS = ("trend", "1-month", "one month", "last month", "past month", "volatility")
+SECTOR_WORDS = ("sector", "industry", "drivers", "risks")
+
+STOP = {"THE","AND","FOR","WITH","THIS","WEEK","TODAY"}
+TICKER_RE = re.compile(r"\b([A-Z]{1,5}(?:\.[A-Z])?)\b")
+POPULAR = {"AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","GOOG","META","BRK.B","AVGO","NFLX","AMD","INTC"}
 
 logger = get_logger(__name__)
 enable_langsmith_if_configured(logger)
@@ -103,6 +115,47 @@ def _build_system_message(user_query: str, extra_system: Optional[str] = None) -
         msg += "\n\n# Additional Dev Instructions\n" + extra_system.strip()
     return msg
 
+def extract_symbol(q: str) -> Optional[str]:
+    """Heuristic: return first plausible ticker mentioned in the query."""
+    # prefer popular symbols
+    for t in sorted(POPULAR, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(t)}\b", q.upper()):
+            return t
+    # fall back to uppercase tokens
+    for m in TICKER_RE.finditer(q.upper()):
+        tok = m.group(1)
+        if tok in STOP: 
+            continue
+        # skip common false positives
+        if len(tok) < 1 or len(tok) > 6:
+            continue
+        return tok
+    return None
+
+def decide_route(q: str) -> Tuple[str, Optional[str]]:
+    """
+    Returns (route, symbol_or_none)
+    route ∈ {"WEB","PRICE","TREND","SECTOR","AGENT"}
+    """
+    ql = q.lower()
+    sym = extract_symbol(q)
+
+    # strongly time-sensitive → WebRAG
+    if any(w in ql for w in TIME_WORDS) or any(w in ql for w in EARNINGS_WORDS):
+        return "WEB", sym
+
+    # simple tool intents
+    if any(w in ql for w in PRICE_WORDS) and sym:
+        return "PRICE", sym
+    if any(w in ql for w in TREND_WORDS) and sym:
+        return "TREND", sym
+    if any(w in ql for w in SECTOR_WORDS) and sym:
+        return "SECTOR", sym
+
+    # default: let the agent decide (will still prefer tools per policy)
+    return "AGENT", sym
+
+
 def _make_agent(
     user_query: str,
     extra_system: Optional[str] = None,
@@ -133,15 +186,17 @@ def _make_agent(
 
     return initialize_agent(**kwargs)
 
+
 def run_agent(
     query: str,
     *,
-    extra_system: Optional[str] = None,   # used only in dev
-    use_openai_functions: bool = True,    # default to function-calling
+    extra_system: Optional[str] = None,
+    use_openai_functions: bool = True,
     model: Optional[str] = None,
     max_iterations: int = 3,
     return_steps: bool = False,
-) -> str:
+) -> str | dict:
+    # 1) Validate + guard
     try:
         q = validate_query(query)
     except Exception as e:
@@ -153,7 +208,27 @@ def run_agent(
         return msg
     q = msg
 
+    # 2) Hard router for reliable answers
+    route, sym = decide_route(q)
+    logger.info("Router chose %s (sym=%s) for: %s", route, sym, q)
+
     try:
+        if route == "WEB":
+            ans = web_rag(q)
+            if needs_disclaimer(q):
+                ans = f"{ans}\n\n{DISCLAIMER}"
+            return ans
+
+        if route == "PRICE" and sym:
+            return get_stock_price(sym)
+
+        if route == "TREND" and sym:
+            return format_trend_summary(get_trend_summary(sym))
+
+        if route == "SECTOR" and sym:
+            return format_sector_insight(get_sector_insight(sym))
+
+        # 3) Otherwise run the agent with tools
         agent = _make_agent(
             user_query=q,
             extra_system=extra_system,
@@ -162,20 +237,32 @@ def run_agent(
             max_iterations=max_iterations,
             return_steps=return_steps,
         )
-        logger.info("Agent run | model=%s | functions=%s | iters=%d",
-                    (model or _choose_model(q)), use_openai_functions, max_iterations)
+
         if return_steps:
             result = agent.invoke({"input": q})
-            output = result.get("output", "")
-            steps = result.get("intermediate_steps", [])
+            text = result.get("output", "")
+            # 4) Post-answer fallback: if time-sensitive but no sources,
+            #    force WebRAG to avoid generic non-answers
+            if (any(w in q.lower() for w in TIME_WORDS + EARNINGS_WORDS)
+                and "Sources:" not in text):
+                wr = web_rag(q)
+                if wr and len(wr) > 40:
+                    text = wr
             if needs_disclaimer(q):
-                output = f"{output}\n\n{DISCLAIMER}"
-            return {"text": output, "steps": steps}
+                text = f"{text}\n\n{DISCLAIMER}"
+            return {"text": text, "steps": result.get("intermediate_steps", [])}
         else:
-            output = agent.run(q)
+            text = agent.run(q)
+            if (any(w in q.lower() for w in TIME_WORDS + EARNINGS_WORDS)
+                and "Sources:" not in text):
+                wr = web_rag(q)
+                if wr and len(wr) > 40:
+                    text = wr
             if needs_disclaimer(q):
-                output = f"{output}\n\n{DISCLAIMER}"
-            return output
+                text = f"{text}\n\n{DISCLAIMER}"
+            return text
+
     except Exception as e:
         logger.exception("Agent run failed: %s", redact_sensitive(str(e)))
         return "❌ Sorry, something went wrong while processing your request. Please try again."
+
